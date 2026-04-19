@@ -34,7 +34,7 @@ def load_full_config(config_path="configs/datasets_config.yaml"):
 
 
 def get_config_for_dataset(dataset_name, full_config):
-    """获取指定数据集的配置（只从YAML读取数据集相关配置）"""
+    """获取指定数据集的配置"""
     dataset_cfg = full_config['datasets'][dataset_name]
     output_cfg = full_config.get('output', {})
 
@@ -48,7 +48,24 @@ def get_config_for_dataset(dataset_name, full_config):
     cfg.num_samples = dataset_cfg.get('model', {}).get('num_samples', 10000)
     cfg.save_dir = str(project_root / output_cfg.get('save_dir', 'output/maskformer_models'))
 
-    # 其他参数由命令行提供（argparse 有默认值）
+    # 模型参数默认值（会被命令行覆盖）
+    cfg.d_model = 256
+    cfg.nhead = 8
+    cfg.num_encoder_layers = 4
+    cfg.num_decoder_layers = 4
+    cfg.num_queries = 100
+    cfg.dim_feedforward = 1024
+    cfg.dropout = 0.1
+    cfg.num_classes = 6
+
+    # 训练参数默认值（会被命令行覆盖）
+    cfg.epochs = 50
+    cfg.lr = 0.0001
+    cfg.weight_decay = 0.0001
+    cfg.clip_grad_norm = 1.0
+    cfg.val_ratio = 0.2
+
+    # 其他
     cfg.num_workers = 4
     cfg.device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -500,7 +517,7 @@ if __name__ == "__main__":
                         choices=['SMAP', 'SMD', 'SWaT', 'MSL', 'PSM'])
     parser.add_argument('--model_path', type=str, default=None)
 
-    # 全局模型参数
+    # 模型参数
     parser.add_argument('--d_model', type=int, default=256)
     parser.add_argument('--nhead', type=int, default=8)
     parser.add_argument('--num_encoder_layers', type=int, default=4)
@@ -510,12 +527,17 @@ if __name__ == "__main__":
     parser.add_argument('--dropout', type=float, default=0.1)
     parser.add_argument('--num_classes', type=int, default=6)
 
-    # 全局训练参数
+    # 训练参数
     parser.add_argument('--epochs', type=int, default=50)
     parser.add_argument('--lr', type=float, default=0.0001)
     parser.add_argument('--weight_decay', type=float, default=0.0001)
     parser.add_argument('--clip_grad_norm', type=float, default=1.0)
     parser.add_argument('--val_ratio', type=float, default=0.2)
+
+    # 数据参数
+    parser.add_argument('--seq_len', type=int, default=None)
+    parser.add_argument('--batch_size', type=int, default=None)
+    parser.add_argument('--num_samples', type=int, default=None)
 
     args = parser.parse_args()
 
@@ -524,10 +546,9 @@ if __name__ == "__main__":
     cfg = get_config_for_dataset(args.dataset, full_config)
 
     # 命令行参数覆盖
-    for key in ['d_model', 'nhead', 'num_encoder_layers', 'num_decoder_layers',
-                'num_queries', 'dim_feedforward', 'dropout', 'num_classes',
-                'epochs', 'lr', 'weight_decay', 'clip_grad_norm', 'val_ratio']:
-        setattr(cfg, key, getattr(args, key))
+    for key, val in vars(args).items():
+        if val is not None and hasattr(cfg, key):
+            setattr(cfg, key, val)
 
     # 打印配置
     print("=" * 60)
