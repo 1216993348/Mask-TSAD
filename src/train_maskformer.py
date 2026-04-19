@@ -293,6 +293,31 @@ def train(cfg):
             num_batches += 1
             pbar.update(batch_idx + 1, loss=loss.item())
 
+            # ========== 每 50 个 batch 打印 Query 分工 ==========
+            if (batch_idx + 1) % 50 == 0:
+                model.eval()
+                with torch.no_grad():
+                    # 统计当前 batch 的 query 类别分布
+                    pred_labels = torch.argmax(F.softmax(pred_class, dim=-1), dim=-1)
+                    query_class_count = torch.zeros(cfg.num_queries, cfg.num_classes + 1).to(cfg.device)
+
+                    for b in range(x.shape[0]):
+                        for q in range(cfg.num_queries):
+                            query_class_count[q, pred_labels[b, q]] += 1
+
+                    active_queries = (query_class_count[:, :cfg.num_classes].sum(dim=1) > 0).sum().item()
+                    print(f"\n   [Batch {batch_idx + 1}] 活跃异常Query: {active_queries}/{cfg.num_queries}")
+
+                    # 打印前5个活跃 query
+                    for q in range(min(20, cfg.num_queries)):
+                        main_class = torch.argmax(query_class_count[q]).item()
+                        if main_class < cfg.num_classes:
+                            print(f"      Q{q}: 异常类{main_class}")
+                        else:
+                            print(f"      Q{q}: 背景")
+
+                model.train()  # 切回训练模式
+
         avg_loss = epoch_loss / num_batches
         history['train_loss'].append(avg_loss)
 
@@ -312,10 +337,6 @@ def train(cfg):
                     'history': history
                 }, best_model_path)
                 print(f"\n   💾 Best model saved (val_f1={val_f1:.4f})")
-
-        scheduler.step()
-        current_lr = scheduler.get_last_lr()[0]
-        print(f"\n   📊 Epoch {epoch + 1}: loss={avg_loss:.4f}, lr={current_lr:.2e}, best_val_f1={best_val_f1:.4f}")
 
     print("-" * 60)
     print("\n✅ Training completed!")
