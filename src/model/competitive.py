@@ -53,7 +53,9 @@ def competitive_matching(pred_class, pred_mask, target_mask, target_cls, num_cla
         target = target_mask
         intersection = (pred_prob * target).sum()
         dice = (2 * intersection + 1) / (pred_prob.sum() + target.sum() + 1)
-        scores[q] = cls_score + dice
+        cls_prob = F.softmax(pred_class[q], dim=-1)[target_cls]
+        scores[q] = cls_prob + dice
+        #scores[q] = cls_score + dice
 
     best_q = torch.argmax(scores)
 
