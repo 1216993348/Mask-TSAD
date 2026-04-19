@@ -260,6 +260,15 @@ def train(cfg):
     optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=cfg.epochs)
 
+    # 混合精度训练（仅 CUDA）
+    use_amp = cfg.device == 'cuda'
+    if use_amp:
+        from torch.cuda.amp import autocast, GradScaler
+        scaler = GradScaler()
+        print("   Using mixed precision training (AMP)")
+    else:
+        print("   Using FP32 training (CPU)")
+
     best_val_f1 = 0.0
     history = {'train_loss': [], 'val_f1': []}
 
@@ -275,20 +284,30 @@ def train(cfg):
         epoch_loss = 0
         num_batches = 0
 
-        pbar = ProgressBar(len(train_loader), desc=f"Epoch {epoch+1}/{cfg.epochs}")
+        pbar = ProgressBar(len(train_loader), desc=f"Epoch {epoch + 1}/{cfg.epochs}")
 
         for batch_idx, batch in enumerate(train_loader):
             x = batch['x'].to(cfg.device)
             masks = batch['masks']
             classes = batch['classes']
 
-            pred_class, pred_mask = model(x)
-            loss = competitive_matching_batch(pred_class, pred_mask, masks, classes, cfg.num_classes)
+            if use_amp:
+                with autocast():
+                    pred_class, pred_mask = model(x)
+                    loss = competitive_matching_batch(pred_class, pred_mask, masks, classes, cfg.num_classes)
 
-            optimizer.zero_grad()
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.clip_grad_norm)
-            optimizer.step()
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+                optimizer.zero_grad()
+            else:
+                pred_class, pred_mask = model(x)
+                loss = competitive_matching_batch(pred_class, pred_mask, masks, classes, cfg.num_classes)
+
+                optimizer.zero_grad()
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.clip_grad_norm)
+                optimizer.step()
 
             epoch_loss += loss.item()
             num_batches += 1
@@ -297,6 +316,7 @@ def train(cfg):
         avg_loss = epoch_loss / num_batches
         history['train_loss'].append(avg_loss)
 
+        # 每5个epoch验证一次
         if (epoch + 1) % 5 == 0:
             val_results = evaluate_end_to_end(model, val_loader, cfg)
             val_f1 = val_results['segment_level']['f1']
@@ -315,7 +335,7 @@ def train(cfg):
 
         scheduler.step()
         current_lr = scheduler.get_last_lr()[0]
-        print(f"\n   📊 Epoch {epoch+1}: loss={avg_loss:.4f}, lr={current_lr:.2e}, best_val_f1={best_val_f1:.4f}")
+        print(f"\n   📊 Epoch {epoch + 1}: loss={avg_loss:.4f}, lr={current_lr:.2e}, best_val_f1={best_val_f1:.4f}")
 
     print("-" * 60)
     print("\n✅ Training completed!")
