@@ -10,7 +10,16 @@ import torch.nn.functional as F
 def competitive_matching(pred_class, pred_mask, target_mask, target_cls, num_classes):
     """
     多个 query 竞争预测同一个异常段
-    训练和推理一致：选整体代价最低的 query
+
+    Args:
+        pred_class: (Q, C+1) 类别预测
+        pred_mask: (Q, T) mask 预测（logits）
+        target_mask: (T,) 目标 mask，全0表示无异常
+        target_cls: int 目标类别，-1 表示无异常
+        num_classes: int 类别数
+    Returns:
+        loss: scalar
+        best_q: int or None
     """
     Q, T = pred_mask.shape
     device = pred_class.device
@@ -20,59 +29,60 @@ def competitive_matching(pred_class, pred_mask, target_mask, target_cls, num_cla
     if target_cls < 0 or target_mask.sum() == 0:
         total_loss = 0.0
         for q in range(Q):
+            # 类别损失：预测背景类
             cls_loss = F.cross_entropy(
-                pred_class[q, :bg_cls + 1].unsqueeze(0),
+                pred_class[q, :bg_cls+1].unsqueeze(0),
                 torch.tensor([bg_cls], device=device)
             )
-            mask_loss = F.binary_cross_entropy(
-                torch.sigmoid(pred_mask[q]),
+            # Mask 损失：使用 BCEWithLogitsLoss（不需要手动 sigmoid）
+            mask_loss = F.binary_cross_entropy_with_logits(
+                pred_mask[q],
                 torch.zeros(T, device=device)
             )
             total_loss += cls_loss + mask_loss
         return total_loss / Q, None
 
     # ========== 情况2：有异常 ==========
-    # 计算每个 query 的整体代价（与推理一致）
-    costs = torch.zeros(Q, device=device)
-
+    # 计算每个 query 的综合得分（使用 logits，不需要 sigmoid）
+    scores = torch.zeros(Q, device=device)
     for q in range(Q):
-        # 1. 类别代价（负对数似然）
-        cls_cost = -pred_class[q, target_cls]
-
-        # 2. Mask 代价（BCE + Dice）
-        pred = torch.sigmoid(pred_mask[q])
+        # 类别得分
+        cls_score = pred_class[q, target_cls]
+        # Dice 得分（用 sigmoid 转换后计算）
+        pred_prob = torch.sigmoid(pred_mask[q])
         target = target_mask
+        intersection = (pred_prob * target).sum()
+        dice = (2 * intersection + 1) / (pred_prob.sum() + target.sum() + 1)
+        scores[q] = cls_score + dice
 
-        bce = F.binary_cross_entropy(pred, target, reduction='sum')
-        intersection = (pred * target).sum()
-        dice = 1 - (2 * intersection + 1) / (pred.sum() + target.sum() + 1)
-
-        costs[q] = cls_cost + bce + dice
-
-    # 选代价最低的 query
-    best_q = torch.argmin(costs)
+    best_q = torch.argmax(scores)
 
     # 赢家损失
     cls_loss = F.cross_entropy(
-        pred_class[best_q, :bg_cls + 1].unsqueeze(0),
+        pred_class[best_q, :bg_cls+1].unsqueeze(0),
         torch.tensor([target_cls], device=device)
     )
-    pred = torch.sigmoid(pred_mask[best_q])
-    target = target_mask
-    bce_loss = F.binary_cross_entropy(pred, target)
-    intersection = (pred * target).sum()
-    dice_loss = 1 - (2 * intersection + 1) / (pred.sum() + target.sum() + 1)
+
+    # 使用 BCEWithLogitsLoss（输入 logits，不需要 sigmoid）
+    bce_loss = F.binary_cross_entropy_with_logits(
+        pred_mask[best_q],
+        target_mask
+    )
+
+    pred_prob = torch.sigmoid(pred_mask[best_q])
+    intersection = (pred_prob * target_mask).sum()
+    dice_loss = 1 - (2 * intersection + 1) / (pred_prob.sum() + target_mask.sum() + 1)
     total_loss = cls_loss + bce_loss + dice_loss
 
     # 输家损失（预测背景）
     for q in range(Q):
         if q != best_q:
             cls_loss_q = F.cross_entropy(
-                pred_class[q, :bg_cls + 1].unsqueeze(0),
+                pred_class[q, :bg_cls+1].unsqueeze(0),
                 torch.tensor([bg_cls], device=device)
             )
-            mask_loss_q = F.binary_cross_entropy(
-                torch.sigmoid(pred_mask[q]),
+            mask_loss_q = F.binary_cross_entropy_with_logits(
+                pred_mask[q],
                 torch.zeros(T, device=device)
             )
             total_loss += 0.1 * (cls_loss_q + mask_loss_q)
