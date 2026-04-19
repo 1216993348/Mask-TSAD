@@ -193,7 +193,6 @@ def evaluate_end_to_end(model, dataloader, cfg):
 
     return results
 
-
 def train(cfg):
     """训练模型"""
     print("=" * 60)
@@ -260,15 +259,6 @@ def train(cfg):
     optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=cfg.epochs)
 
-    # 混合精度训练（仅 CUDA）
-    use_amp = cfg.device == 'cuda'
-    if use_amp:
-        from torch.cuda.amp import autocast, GradScaler
-        scaler = GradScaler()
-        print("   Using mixed precision training (AMP)")
-    else:
-        print("   Using FP32 training (CPU)")
-
     best_val_f1 = 0.0
     history = {'train_loss': [], 'val_f1': []}
 
@@ -291,23 +281,13 @@ def train(cfg):
             masks = batch['masks']
             classes = batch['classes']
 
-            if use_amp:
-                with autocast():
-                    pred_class, pred_mask = model(x)
-                    loss = competitive_matching_batch(pred_class, pred_mask, masks, classes, cfg.num_classes)
+            pred_class, pred_mask = model(x)
+            loss = competitive_matching_batch(pred_class, pred_mask, masks, classes, cfg.num_classes)
 
-                scaler.scale(loss).backward()
-                scaler.step(optimizer)
-                scaler.update()
-                optimizer.zero_grad()
-            else:
-                pred_class, pred_mask = model(x)
-                loss = competitive_matching_batch(pred_class, pred_mask, masks, classes, cfg.num_classes)
-
-                optimizer.zero_grad()
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.clip_grad_norm)
-                optimizer.step()
+            optimizer.zero_grad()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.clip_grad_norm)
+            optimizer.step()
 
             epoch_loss += loss.item()
             num_batches += 1
