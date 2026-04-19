@@ -1,0 +1,115 @@
+datasets:
+  SMD:
+    type: "server"
+    data_dir: "data/SMD"
+    is_multi_entity: true
+    train_dir: "train"
+    test_dir: "test"
+    label_dir: "labels"
+    interp_dir: "interpretation_label"
+    file_pattern: "machine-*.txt"
+    # 模型配置
+    model:
+      seq_len: 512
+      batch_size: 32
+      num_samples: 10000
+    analysis:
+      max_dims_for_corr: 38
+      aggregate_method: "mean"
+
+  SWaT:
+    type: "industrial"
+    data_dir: "data/SWaT"
+    files:
+      train: "SWaT_train.npy"
+      test: "SWaT_test.npy"
+      label: "SWaT_test_label.npy"  # 加上这一行
+    train_ratio: 0.5
+    model:
+      seq_len: 256
+      batch_size: 32
+      num_samples: 8000
+    shape_check:
+      transpose_if_dims_smaller: false
+    analysis:
+      max_dims_for_corr: 51
+
+  SMAP:
+    type: "nasa"
+    data_dir: "data/SMAP"
+    files:
+      train: "SMAP_train.npy"
+      test: "SMAP_test.npy"
+      label: "SMAP_test_label.npy"
+    # 模型配置
+    model:
+      seq_len: 512
+      batch_size: 32
+      num_samples: 10000
+    shape_check:
+      transpose_if_dims_smaller: true
+    analysis:
+      max_dims_for_corr: 25
+
+  MSL:
+    type: "nasa"
+    data_dir: "data/MSL"
+    files:
+      train: "MSL_train.npy"
+      test: "MSL_test.npy"
+      label: "MSL_test_label.npy"
+    # 模型配置
+    model:
+      seq_len: 512
+      batch_size: 32
+      num_samples: 10000
+    shape_check:
+      transpose_if_dims_smaller: true
+    analysis:
+      max_dims_for_corr: 55
+
+  PSM:
+    type: "server"
+    data_dir: "data/PSM"
+    files:
+      train: "train.csv"
+      test: "test.csv"
+      label: "test_label.csv"
+    # 模型配置
+    model:
+      seq_len: 256
+      batch_size: 32
+      num_samples: 8000
+    csv_format:
+      sep: ","
+      header: 0
+      label_column: "label"
+
+# 全局模型配置（所有数据集共享）
+global_model:
+  name: "MaskFormerTS"
+  d_model: 256
+  nhead: 8
+  num_encoder_layers: 4
+  num_decoder_layers: 4
+  num_queries: 100
+  dim_feedforward: 1024
+  dropout: 0.1
+  num_classes: 6
+
+# 全局训练配置
+global_training:
+  epochs: 1
+  lr: 0.0001
+  weight_decay: 0.0001
+  clip_grad_norm: 1.0
+  scheduler: "cosine"
+  val_ratio: 0.2
+
+# 全局评估配置
+global_evaluation:
+  anomaly_ratios: [0.1, 0.5, 1, 2, 5]
+
+# 输出配置
+output:
+  save_dir: "output/maskformer_models"
