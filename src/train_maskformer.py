@@ -1,6 +1,14 @@
 """
 MaskFormer 训练脚本 - 端到端异常检测
 """
+import sys
+import os
+from pathlib import Path
+
+# 获取项目根目录（假设当前文件在 src/ 下）
+current_dir = Path(__file__).parent  # src 目录
+project_root = current_dir.parent    # 项目根目录
+sys.path.insert(0, str(project_root))
 
 import numpy as np
 import torch
