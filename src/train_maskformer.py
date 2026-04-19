@@ -1,14 +1,6 @@
 """
 MaskFormer 训练脚本 - 端到端异常检测
 """
-import sys
-import os
-from pathlib import Path
-
-# 获取项目根目录（假设当前文件在 src/ 下）
-current_dir = Path(__file__).parent  # src 目录
-project_root = current_dir.parent    # 项目根目录
-sys.path.insert(0, str(project_root))
 
 import numpy as np
 import torch
@@ -21,7 +13,10 @@ import yaml
 from datetime import timedelta
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
 
-sys.path.insert(0, str(Path(__file__).parent))
+# 添加项目根目录到路径
+current_dir = Path(__file__).parent
+project_root = current_dir.parent
+sys.path.insert(0, str(project_root))
 
 from src.model.maskformer import build_model
 from src.model.competitive import competitive_matching_batch
@@ -32,58 +27,28 @@ from src.inference import MaskFormerInference
 
 def load_full_config(config_path="configs/datasets_config.yaml"):
     """加载完整配置"""
-    current_dir = Path(__file__).parent
-    project_root = current_dir.parent
     config_full_path = project_root / config_path
-
     with open(config_full_path, 'r', encoding='utf-8') as f:
         full_config = yaml.safe_load(f)
-
     return full_config
 
 
 def get_config_for_dataset(dataset_name, full_config):
-    """获取指定数据集的配置"""
+    """获取指定数据集的配置（只从YAML读取数据集相关配置）"""
     dataset_cfg = full_config['datasets'][dataset_name]
-    global_model = full_config.get('global_model', {})
-    global_training = full_config.get('global_training', {})
     output_cfg = full_config.get('output', {})
 
     class Config:
         pass
 
     cfg = Config()
-
-    # 数据集特定配置
     cfg.dataset = dataset_name
     cfg.seq_len = dataset_cfg.get('model', {}).get('seq_len', 512)
     cfg.batch_size = dataset_cfg.get('model', {}).get('batch_size', 32)
     cfg.num_samples = dataset_cfg.get('model', {}).get('num_samples', 10000)
-
-    # 模型配置（全局）
-    cfg.d_model = global_model.get('d_model', 256)
-    cfg.nhead = global_model.get('nhead', 8)
-    cfg.num_encoder_layers = global_model.get('num_encoder_layers', 4)
-    cfg.num_decoder_layers = global_model.get('num_decoder_layers', 4)
-    cfg.num_queries = global_model.get('num_queries', 100)
-    cfg.dim_feedforward = global_model.get('dim_feedforward', 1024)
-    cfg.dropout = global_model.get('dropout', 0.1)
-    cfg.num_classes = global_model.get('num_classes', 6)
-
-    # 训练配置（全局）
-    cfg.epochs = global_training.get('epochs', 50)
-    cfg.lr = global_training.get('lr', 1e-4)
-    cfg.weight_decay = global_training.get('weight_decay', 1e-4)
-    cfg.clip_grad_norm = global_training.get('clip_grad_norm', 1.0)
-    cfg.scheduler = global_training.get('scheduler', 'cosine')
-    cfg.val_ratio = global_training.get('val_ratio', 0.2)
-
-    # 输出配置 - 修复路径
-    current_dir = Path(__file__).parent
-    project_root = current_dir.parent
     cfg.save_dir = str(project_root / output_cfg.get('save_dir', 'output/maskformer_models'))
 
-    # 其他
+    # 其他参数由命令行提供（argparse 有默认值）
     cfg.num_workers = 4
     cfg.device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -108,9 +73,7 @@ def collate_fn(batch):
 
 
 def adjust_predictions(gt, pred):
-    """
-    调整预测：如果某个异常段中有一个点被预测为异常，整个段都标记为异常
-    """
+    """调整预测：如果某个异常段中有一个点被预测为异常，整个段都标记为异常"""
     gt_adj = gt.copy()
     pred_adj = pred.copy()
 
@@ -133,7 +96,6 @@ def adjust_predictions(gt, pred):
 
 
 class ProgressBar:
-    """训练进度条"""
     def __init__(self, total, desc="Training"):
         self.total = total
         self.desc = desc
@@ -158,10 +120,7 @@ class ProgressBar:
 
 
 def evaluate_end_to_end(model, dataloader, cfg):
-    """
-    端到端评估：使用推理模块
-    """
-    # 创建推理器
+    """端到端评估：使用推理模块"""
     inferencer = MaskFormerInference(
         model=model,
         device=cfg.device,
@@ -174,17 +133,15 @@ def evaluate_end_to_end(model, dataloader, cfg):
     all_anomaly_scores = []
 
     for batch in dataloader:
-        x = batch['x'].cpu().numpy()  # 转为 numpy 给推理器
+        x = batch['x'].cpu().numpy()
         masks_batch = batch['masks']
 
-        # 批量推理
         results = inferencer.predict_batch(x)
 
         for b, result in enumerate(results):
             all_predictions.extend(result['anomaly_mask'])
             all_anomaly_scores.extend(result['anomaly_score'])
 
-            # 真实标签
             if masks_batch[b] and len(masks_batch[b]) > 0:
                 label = masks_batch[b][0].cpu().numpy()
             else:
@@ -195,7 +152,6 @@ def evaluate_end_to_end(model, dataloader, cfg):
     all_labels = np.array(all_labels)
     all_anomaly_scores = np.array(all_anomaly_scores)
 
-    # 计算指标
     acc = accuracy_score(all_labels, all_predictions)
     prec = precision_score(all_labels, all_predictions, zero_division=0)
     rec = recall_score(all_labels, all_predictions, zero_division=0)
@@ -221,14 +177,11 @@ def evaluate_end_to_end(model, dataloader, cfg):
     return results
 
 
-def train(dataset_name="SMAP"):
+def train(cfg):
     """训练模型"""
-    full_config = load_full_config()
-    cfg = get_config_for_dataset(dataset_name, full_config)
-
     print("=" * 60)
     print(f"MaskFormer 端到端异常检测训练")
-    print(f"数据集: {dataset_name}")
+    print(f"数据集: {cfg.dataset}")
     print("=" * 60)
     print(f"Device: {cfg.device}")
     print(f"Seq len: {cfg.seq_len}")
@@ -241,12 +194,14 @@ def train(dataset_name="SMAP"):
     print(f"Save dir: {cfg.save_dir}")
     print("=" * 60)
 
+    # 加载数据
     print("\n📂 Loading data...")
     loader = TSDataLoader(use_hf=True)
-    data_dict = loader.load_dataset(dataset_name)
+    data_dict = loader.load_dataset(cfg.dataset)
     data = data_dict['X_test']
-    print(f"   {dataset_name} shape: {data.shape}")
+    print(f"   {cfg.dataset} shape: {data.shape}")
 
+    # 创建数据集
     print("\n📦 Creating dataset...")
     full_dataset = AnomalyDataset(
         data,
@@ -267,6 +222,7 @@ def train(dataset_name="SMAP"):
     print(f"   Train samples: {len(train_dataset)}")
     print(f"   Val samples: {len(val_dataset)}")
 
+    # 创建模型
     print("\n🏗️ Building model...")
     input_dim = data.shape[1]
     model = build_model(
@@ -288,11 +244,11 @@ def train(dataset_name="SMAP"):
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=cfg.epochs)
 
     best_val_f1 = 0.0
-    history = {'train_loss': [], 'val_f1': [], 'val_class_acc': []}
+    history = {'train_loss': [], 'val_f1': []}
 
     save_path = Path(cfg.save_dir)
     save_path.mkdir(parents=True, exist_ok=True)
-    best_model_path = save_path / f"maskformer_best_{dataset_name}.pth"
+    best_model_path = save_path / f"maskformer_best_{cfg.dataset}.pth"
 
     print("\n🚀 Starting training...")
     print("-" * 60)
@@ -351,16 +307,14 @@ def train(dataset_name="SMAP"):
     return model, history
 
 
-def test(model_path=None, dataset_name="SMAP"):
-    """
-    完整测试评估 - 使用推理模块
-    """
+def test(cfg, model_path=None, dataset_name=None):
+    """测试模型"""
+    if dataset_name is None:
+        dataset_name = cfg.dataset
+
     print("\n" + "=" * 60)
     print("端到端模型测试评估")
     print("=" * 60)
-
-    full_config = load_full_config()
-    cfg = get_config_for_dataset(dataset_name, full_config)
 
     print("\n📂 Loading test data...")
     loader = TSDataLoader(use_hf=True)
@@ -386,14 +340,9 @@ def test(model_path=None, dataset_name="SMAP"):
 
     # 加载模型
     print("\n📦 Loading model...")
-    save_path = Path(cfg.save_dir)
-    if model_path is None:
-        model_path = save_path / f"maskformer_best_{dataset_name}.pth"
-    else:
-        model_path = Path(model_path)
-
+    input_dim = X_test.shape[1]
     model = build_model(
-        input_dim=X_test.shape[1],
+        input_dim=input_dim,
         d_model=cfg.d_model,
         nhead=cfg.nhead,
         num_encoder_layers=cfg.num_encoder_layers,
@@ -404,11 +353,22 @@ def test(model_path=None, dataset_name="SMAP"):
         dropout=cfg.dropout
     ).to(cfg.device)
 
-    checkpoint = torch.load(model_path, map_location=cfg.device)
-    model.load_state_dict(checkpoint['model_state_dict'])
-    print(f"   ✓ Loaded model from {model_path}")
+    save_path = Path(cfg.save_dir)
+    if model_path is None:
+        model_path = save_path / f"maskformer_best_{dataset_name}.pth"
+    else:
+        model_path = Path(model_path)
 
-    # 创建推理器
+    if model_path.exists():
+        checkpoint = torch.load(model_path, map_location=cfg.device, weights_only=False)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        print(f"   ✓ Loaded model from {model_path}")
+        if 'val_f1' in checkpoint:
+            print(f"   ✓ Best validation F1: {checkpoint['val_f1']:.4f}")
+    else:
+        print(f"   ⚠️ Model not found at {model_path}")
+        return None
+
     inferencer = MaskFormerInference(
         model=model,
         device=cfg.device,
@@ -416,7 +376,6 @@ def test(model_path=None, dataset_name="SMAP"):
         mask_threshold=0.5
     )
 
-    # 评估
     print(f"\n🔮 Running evaluation...")
 
     all_predictions = []
@@ -438,7 +397,6 @@ def test(model_path=None, dataset_name="SMAP"):
     all_labels = np.array(all_labels)
     all_anomaly_scores = np.array(all_anomaly_scores)
 
-    # 计算指标
     acc = accuracy_score(all_labels, all_predictions)
     prec = precision_score(all_labels, all_predictions, zero_division=0)
     rec = recall_score(all_labels, all_predictions, zero_division=0)
@@ -502,7 +460,7 @@ def test(model_path=None, dataset_name="SMAP"):
     return results
 
 
-def plot_training_history(history, dataset_name, save_dir="output/maskformer_models"):
+def plot_training_history(history, dataset_name, save_dir):
     """绘制训练曲线"""
     import matplotlib.pyplot as plt
 
@@ -533,27 +491,58 @@ def plot_training_history(history, dataset_name, save_dir="output/maskformer_mod
     plt.close()
     print(f"   📊 Training curve saved to {save_path / f'training_history_{dataset_name}.pdf'}")
 
-
 if __name__ == "__main__":
     import argparse
+
     parser = argparse.ArgumentParser()
     parser.add_argument('--mode', type=str, default='train', choices=['train', 'test'])
     parser.add_argument('--dataset', type=str, default='SWaT',
                         choices=['SMAP', 'SMD', 'SWaT', 'MSL', 'PSM'])
-    parser.add_argument('--model_path', type=str, default='maskformer_best_1.pth')
+    parser.add_argument('--model_path', type=str, default=None)
+
+    # 全局模型参数
+    parser.add_argument('--d_model', type=int, default=256)
+    parser.add_argument('--nhead', type=int, default=8)
+    parser.add_argument('--num_encoder_layers', type=int, default=4)
+    parser.add_argument('--num_decoder_layers', type=int, default=4)
+    parser.add_argument('--num_queries', type=int, default=100)
+    parser.add_argument('--dim_feedforward', type=int, default=1024)
+    parser.add_argument('--dropout', type=float, default=0.1)
+    parser.add_argument('--num_classes', type=int, default=6)
+
+    # 全局训练参数
+    parser.add_argument('--epochs', type=int, default=50)
+    parser.add_argument('--lr', type=float, default=0.0001)
+    parser.add_argument('--weight_decay', type=float, default=0.0001)
+    parser.add_argument('--clip_grad_norm', type=float, default=1.0)
+    parser.add_argument('--val_ratio', type=float, default=0.2)
+
     args = parser.parse_args()
 
+    # 加载配置
+    full_config = load_full_config()
+    cfg = get_config_for_dataset(args.dataset, full_config)
+
+    # 命令行参数覆盖
+    for key in ['d_model', 'nhead', 'num_encoder_layers', 'num_decoder_layers',
+                'num_queries', 'dim_feedforward', 'dropout', 'num_classes',
+                'epochs', 'lr', 'weight_decay', 'clip_grad_norm', 'val_ratio']:
+        setattr(cfg, key, getattr(args, key))
+
+    # 打印配置
+    print("=" * 60)
+    print(f"模式: {args.mode} | 数据集: {cfg.dataset} | Device: {cfg.device}")
+    print(f"Epochs: {cfg.epochs} | LR: {cfg.lr} | Batch: {cfg.batch_size} | SeqLen: {cfg.seq_len}")
+    print(f"D_model: {cfg.d_model} | Queries: {cfg.num_queries}")
+    print("=" * 60)
+
     if args.mode == 'train':
-        model, history = train(dataset_name=args.dataset)
+        model, history = train(cfg)
         try:
-            plot_training_history(history, args.dataset)
+            plot_training_history(history, args.dataset, cfg.save_dir)
         except Exception as e:
-            print(f"   ⚠️ Could not plot training curve: {e}")
-
-        print("\n" + "=" * 60)
-        print("开始测试评估...")
-        print("=" * 60)
-        test(model_path=None, dataset_name=args.dataset)
-
+            print(f"⚠️ Could not plot: {e}")
+        print("\n开始测试评估...")
+        test(cfg, model_path=None, dataset_name=args.dataset)
     else:
-        test(model_path=args.model_path, dataset_name=args.dataset)
+        test(cfg, model_path=args.model_path, dataset_name=args.dataset)
