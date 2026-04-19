@@ -226,6 +226,13 @@ def train(cfg):
         num_classes=cfg.num_classes
     )
 
+    # 统计异常样本比例
+    anomaly_count = 0
+    for i in range(len(full_dataset)):
+        if full_dataset[i]['has_anomaly']:
+            anomaly_count += 1
+    print(f"   Injected anomaly ratio: {anomaly_count / len(full_dataset):.1%}")
+
     val_size = int(len(full_dataset) * cfg.val_ratio)
     train_size = len(full_dataset) - val_size
     train_dataset, val_dataset = torch.utils.data.random_split(full_dataset, [train_size, val_size])
@@ -278,7 +285,7 @@ def train(cfg):
 
         for batch_idx, batch in enumerate(train_loader):
             x = batch['x'].to(cfg.device)
-            masks = batch['masks']
+            masks = batch['mask']
             classes = batch['classes']
 
             pred_class, pred_mask = model(x)
@@ -293,30 +300,94 @@ def train(cfg):
             num_batches += 1
             pbar.update(batch_idx + 1, loss=loss.item())
 
-            # ========== 每 50 个 batch 打印 Query 分工 ==========
-            if (batch_idx + 1) % 50 == 0:
+            # 在 train 函数中，每 50 个 batch 打印的地方
+            if (batch_idx + 1) % 1 == 0:
                 model.eval()
                 with torch.no_grad():
-                    # 统计当前 batch 的 query 类别分布
-                    pred_labels = torch.argmax(F.softmax(pred_class, dim=-1), dim=-1)
-                    query_class_count = torch.zeros(cfg.num_queries, cfg.num_classes + 1).to(cfg.device)
+                    pred_labels = torch.argmax(F.softmax(pred_class, dim=-1), dim=-1)  # (B, Q)
 
-                    for b in range(x.shape[0]):
+                    # 统计每个 query 预测各类别的次数
+                    query_class_votes = torch.zeros(cfg.num_queries, cfg.num_classes + 1)
+                    for b in range(pred_labels.shape[0]):
                         for q in range(cfg.num_queries):
-                            query_class_count[q, pred_labels[b, q]] += 1
+                            query_class_votes[q, pred_labels[b, q]] += 1
 
-                    active_queries = (query_class_count[:, :cfg.num_classes].sum(dim=1) > 0).sum().item()
-                    print(f"\n   [Batch {batch_idx + 1}] 活跃异常Query: {active_queries}/{cfg.num_queries}")
+                    # 找出每个 query 最常预测的类别
+                    most_common_class = torch.argmax(query_class_votes, dim=1)
+                    is_anomaly_query = most_common_class < cfg.num_classes
 
-                    # 打印前5个活跃 query
-                    for q in range(min(20, cfg.num_queries)):
-                        main_class = torch.argmax(query_class_count[q]).item()
-                        if main_class < cfg.num_classes:
-                            print(f"      Q{q}: 异常类{main_class}")
-                        else:
-                            print(f"      Q{q}: 背景")
+                    # 计算每个 query 的异常投票数
+                    anomaly_votes = query_class_votes[:, :cfg.num_classes].sum(dim=1)
 
-                model.train()  # 切回训练模式
+                    # 按异常投票数排序
+                    sorted_indices = torch.argsort(anomaly_votes, descending=True)
+
+                    active_queries = is_anomaly_query.sum().item()
+
+                    print(f"\n   [Batch {batch_idx + 1}] 干活的Query: {active_queries}/{cfg.num_queries}")
+
+                    if active_queries > 0:
+                        class_names = ['Spike', 'Drift', 'Shift', 'Period', 'Cascade', 'Missing', '背景']
+                        print(f"      {'Query':<6} {'类别':<12} {'异常投票数':<10} {'占比':<8}")
+                        print(f"      {'-' * 40}")
+
+                        count = 0
+                        for q in sorted_indices:
+                            if is_anomaly_query[q]:
+                                cls = most_common_class[q].item()
+                                votes = anomaly_votes[q].item()
+                                total_votes = query_class_votes[q].sum().item()
+                                ratio = votes / total_votes if total_votes > 0 else 0
+                                print(f"      Q{q:<5} {class_names[cls]:<12} {votes:<10} {ratio:.1%}")
+                                count += 1
+                                if count >= 15:
+                                    break
+
+                    # ========== 可视化 Query 激活图 ==========
+                    # 取第一个样本的 pred_mask
+                    attn = torch.sigmoid(pred_mask[0])  # (Q, T)
+
+                    import matplotlib.pyplot as plt
+                    fig, axes = plt.subplots(1, 2, figsize=(16, 8))
+
+                    # 左图：所有 Query 的激活图
+                    im1 = axes[0].imshow(attn.cpu().numpy(), aspect='auto', cmap='hot')
+                    axes[0].set_xlabel("Time Steps")
+                    axes[0].set_ylabel("Query Index")
+                    axes[0].set_title("Query Activation Map (All Queries)")
+                    plt.colorbar(im1, ax=axes[0])
+
+                    # 右图：只显示干活的 Query
+                    if active_queries > 0:
+                        active_indices = [q.item() for q in sorted_indices if is_anomaly_query[q]][:20]
+                        attn_active = attn[active_indices].cpu().numpy()
+                        im2 = axes[1].imshow(attn_active, aspect='auto', cmap='hot')
+                        axes[1].set_xlabel("Time Steps")
+                        axes[1].set_ylabel("Active Query Index")
+                        axes[1].set_title(f"Query Activation Map (Top {len(active_indices)} Active Queries)")
+                        plt.colorbar(im2, ax=axes[1])
+
+                        # 标注 y 轴标签
+                        class_names_short = ['S', 'D', 'Sh', 'P', 'C', 'M']
+                        y_labels = []
+                        for q in active_indices:
+                            cls = most_common_class[q].item()
+                            if cls < cfg.num_classes:
+                                y_labels.append(f"Q{q}({class_names_short[cls]})")
+                            else:
+                                y_labels.append(f"Q{q}(BG)")
+                        axes[1].set_yticks(range(len(active_indices)))
+                        axes[1].set_yticklabels(y_labels, fontsize=8)
+                    else:
+                        axes[1].text(0.5, 0.5, "No active queries", ha='center', va='center')
+                        axes[1].set_title("No Active Queries")
+
+                    plt.tight_layout()
+                    plt.savefig(f"query_activation_batch_{batch_idx + 1}.png", dpi=150)
+                    plt.close()
+                    print(f"   📊 激活图保存: query_activation_batch_{batch_idx + 1}.png")
+
+                model.train()
 
         avg_loss = epoch_loss / num_batches
         history['train_loss'].append(avg_loss)
@@ -550,7 +621,7 @@ if __name__ == "__main__":
 
     # 训练参数
     parser.add_argument('--epochs', type=int, default=50)
-    parser.add_argument('--lr', type=float, default=0.0001)
+    parser.add_argument('--lr', type=float, default=0.00001)
     parser.add_argument('--weight_decay', type=float, default=0.0001)
     parser.add_argument('--clip_grad_norm', type=float, default=1.0)
     parser.add_argument('--val_ratio', type=float, default=0.2)

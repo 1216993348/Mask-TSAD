@@ -44,25 +44,24 @@ class Spike:
 
 # ==================== 2. DRIFT ====================
 class Drift:
-    """趋势漂移 - 明显斜线"""
     @staticmethod
     def apply(x, d, intensity, s, e):
         L = e - s
-        if L < 5:
-            return x
         r = np.std(x[s:e, d]) + 1e-6
-        left_val = x[s-1, d] if s > 0 else x[s, d]
+        left_val = x[s - 1, d] if s > 0 else x[s, d]
 
         t = np.arange(L) / L
+        # 非线性曲线：指数或对数
+        if np.random.rand() < 0.5:
+            curve = np.exp(t * 3) - 1  # 先缓后急
+        else:
+            curve = 1 - np.exp(-t * 3)  # 先急后缓
+
+        curve = curve / curve[-1]  # 归一化
         direction = 1 if np.random.rand() < 0.5 else -1
-        # 大趋势幅度
         trend_amp = intensity * r * np.random.uniform(1.5, 3)
 
-        if direction == 1:
-            trend = left_val + trend_amp * t
-        else:
-            trend = left_val - trend_amp * t
-
+        trend = left_val + direction * trend_amp * curve
         x[s:e, d] = trend
         return x
 
